@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>塗鴉字典：噴漆解碼器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
+
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: #0f172a; /* Slate 900 */
+            color: #f8fafc;
+            overscroll-behavior: none; /* 防止手機下拉更新 */
+        }
+
+        .font-mono {
+            font-family: 'Space Mono', monospace;
+        }
+
+        /* 互動區域設定 */
+        .interactive-container {
+            position: relative;
+            width: 100%;
+            /* 保持 16:9 比例 */
+            aspect-ratio: 16 / 9;
+            margin: 0 auto;
+            border-radius: 0.5rem;
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            /* 自訂游標為噴漆罐或十字準星 */
+            cursor: crosshair;
+        }
+
+        .bg-wall {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            filter: grayscale(60%) brightness(0.6);
+            pointer-events: none;
+            user-select: none;
+        }
+
+        /* Canvas 畫布 */
+        #sprayCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            touch-action: none; /* 防止觸控滑動 */
+        }
+
+        /* 掃描線背景 */
+        .scanline-bg {
+            background: linear-gradient(
+                to bottom,
+                rgba(255,255,255,0),
+                rgba(255,255,255,0) 50%,
+                rgba(0,0,0,0.2) 50%,
+                rgba(0,0,0,0.2)
+            );
+            background-size: 100% 4px;
+        }
+
+        /* 打字機特效 */
+        .typewriter-text {
+            overflow: hidden;
+            border-right: 2px solid #00ffff;
+            animation: typing 0.05s steps(40, end), blink-caret 0.75s step-end infinite;
+        }
+        @keyframes blink-caret {
+            from, to { border-color: transparent }
+            50% { border-color: #00ffff; }
+        }
+
+        /* 進度條動畫 */
+        .progress-bar-fill {
+            transition: width 0.1s linear;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col md:flex-row bg-slate-900 text-slate-200 p-4 md:p-0">
+
+    <!-- 左側/上方：互動噴漆區 -->
+    <div class="w-full md:w-3/5 md:p-8 flex flex-col justify-center relative">
+        <div class="mb-4">
+            <h1 class="text-3xl md:text-4xl font-black mb-2 text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500">
+                塗鴉字典：噴漆解碼器
+            </h1>
+            <p class="text-slate-400 text-sm md:text-base leading-relaxed">
+                拿好你的「數位噴漆罐」。在畫面上點擊並拖曳來噴漆。<br>
+                尋找畫面中微弱的<span class="text-yellow-400">異常區域</span>，持續噴塗直到解碼進度達到 100%，揭露隱藏的城市密碼。
+            </p>
+        </div>
+
+        <div class="interactive-container group ring-2 ring-slate-700">
+            <!-- 牆面背景 -->
+            <img src="https://images.unsplash.com/photo-1543857778-c4a1a3e0b2eb?q=80&w=2024&auto=format&fit=crop" 
+                 alt="Graffiti Wall" 
+                 class="bg-wall">
+            
+            <!-- 繪圖畫布 -->
+            <canvas id="sprayCanvas"></canvas>
+            
+            <!-- UI 裝飾 -->
+            <div class="absolute top-2 left-2 text-cyan-400 font-mono text-xs opacity-70 pointer-events-none z-20">SPRAY_ENGINE_V2.0</div>
+            <div class="absolute bottom-2 right-2 text-slate-400 font-mono text-xs opacity-70 pointer-events-none z-20">
+                <button id="clearBtn" class="bg-slate-800 border border-slate-600 px-2 py-1 rounded hover:bg-slate-700 pointer-events-auto cursor-pointer">
+                    清除牆面 [RESET]
+                </button>
+            </div>
+        </div>
+        <p class="text-center text-slate-500 text-xs mt-3 font-mono">滑鼠左鍵拖曳 / 手機單指滑動 進行噴漆</p>
+    </div>
+
+    <!-- 右側/下方：解碼資訊面板 -->
+    <div class="w-full md:w-2/5 bg-slate-800 border-l border-slate-700 p-6 md:p-10 flex flex-col shadow-2xl z-30 mt-6 md:mt-0">
+        <div class="flex items-center justify-between mb-6 border-b border-slate-700 pb-4">
+            <div class="flex items-center space-x-3">
+                <div class="w-3 h-3 rounded-full bg-red-500 animate-pulse" id="statusIndicator"></div>
+                <h2 class="font-mono text-lg text-slate-300 tracking-widest">DECODER_MODULE</h2>
+            </div>
+            <span id="status-text" class="text-green-500 font-mono text-xs">STATUS: IDLE</span>
+        </div>
+
+        <!-- 進度顯示區塊 -->
+        <div id="progress-container" class="mb-6 opacity-50 transition-opacity duration-300">
+            <div class="flex justify-between text-xs font-mono text-cyan-400 mb-1">
+                <span id="scanning-target">正在掃描區域...</span>
+                <span id="scanning-percent">0%</span>
+            </div>
+            <div class="w-full bg-slate-900 rounded-full h-2.5 border border-slate-700">
+                <div id="progress-bar" class="bg-cyan-500 h-2.5 rounded-full progress-bar-fill" style="width: 0%"></div>
+            </div>
+        </div>
+
+        <!-- 動態內容區塊 -->
+        <div id="decoder-panel" class="flex-grow flex flex-col justify-start scanline-bg relative rounded-lg p-6 border border-slate-700 bg-slate-900/50">
+            
+            <!-- 預設顯示狀態 -->
+            <div id="default-state" class="text-center text-slate-500 flex flex-col items-center h-full justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mb-4 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
+                </svg>
+                <p class="font-mono text-sm">等待塗鴉覆蓋...</p>
+                <p class="text-xs mt-2 leading-relaxed">請在左側牆面的微弱框線區域內進行噴漆。<br>填滿區域以提取文化數據。</p>
+            </div>
+
+            <!-- 解碼後顯示狀態 (預設隱藏) -->
+            <div id="decoded-state" class="hidden h-full flex flex-col">
+                <div class="mb-4 flex flex-wrap justify-between items-end gap-2 border-b border-slate-700 pb-3">
+                    <h3 id="term-title" class="text-3xl font-black text-cyan-400 uppercase tracking-wider"></h3>
+                    <span id="term-subtitle" class="font-mono text-xs bg-cyan-900/50 border border-cyan-700 text-cyan-300 px-2 py-1 rounded"></span>
+                </div>
+                
+                <div class="space-y-4 overflow-y-auto pr-2 custom-scrollbar">
+                    <div>
+                        <h4 class="text-xs text-slate-400 font-mono mb-1">// 表層定義 DATA</h4>
+                        <p id="term-desc" class="text-slate-200 leading-relaxed text-sm"></p>
+                    </div>
+                    
+                    <div class="bg-slate-800/80 p-4 rounded border-l-4 border-cyan-500 relative overflow-hidden">
+                        <div class="absolute top-0 right-0 p-2 opacity-10">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12" viewBox="0 0 20 20" fill="currentColor">
+                              <path fill-rule="evenodd" d="M18 3a1 1 0 00-1.447-.894L8.763 6H5a3 3 0 000 6h.28l1.771 5.316A1 1 0 008 18h1a1 1 0 001-1v-4.382l6.553 3.276A1 1 0 0018 15V3z" clip-rule="evenodd" />
+                            </svg>
+                        </div>
+                        <h4 class="text-xs text-cyan-400 font-mono mb-2">// 深層解碼 DEEP_MEANING</h4>
+                        <p id="term-meaning" class="text-slate-300 leading-relaxed text-sm relative z-10"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 已解鎖項目清單 -->
+        <div class="mt-4 pt-4 border-t border-slate-700">
+            <p class="text-xs text-slate-500 font-mono mb-2">已解鎖檔案 (點擊查看):</p>
+            <div id="unlocked-list" class="flex flex-wrap gap-2">
+                <!-- 動態加入的按鈕 -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 塗鴉字典資料庫
+        const dictionaryData = {
+            tag: {
+                title: "Tag",
+                subtitle: "標籤 / 簽名",
+                desc: "塗鴉文化中最基礎的形式。通常是由單色噴漆或麥克筆快速寫下的個人或團隊代號，風格多為潦草、難以辨識的變體字。",
+                meaning: "在大眾與市府眼中，Tag 是最純粹的「破壞公物」；但在次文化中，它是爭取曝光、宣告「我在這裡」的生存遊戲。Tag 的密集度代表了創作者對這個街區的掌控力與「領域感」。",
+                color: "#ff00ff" // 解鎖時的特效色
+            },
+            throwup: {
+                title: "Throw-up",
+                subtitle: "泡泡字 / 快閃字",
+                desc: "介於 Tag 與完整作品之間。特徵是圓潤的泡泡狀字體，通常只使用兩種顏色（一個填色、一個描邊），能在極短時間內完成。",
+                meaning: "「時間就是風險。」這種風格是與警察巡邏時間賽跑的產物。為了在非法的牆面上快速留下比 Tag 更醒目的印記，塗鴉客必須捨棄細節，追求極致的速度與視覺張力。這反映了塗鴉的「非法本質」。",
+                color: "#ffff00"
+            },
+            piece: {
+                title: "Piece",
+                subtitle: "完整大作",
+                desc: "Masterpiece 的簡稱。包含複雜的色彩漸層、3D效果與背景裝飾。需要耗費大量的時間、噴漆與極高的技巧。",
+                meaning: "因為耗時，Piece 通常出現在廢棄工廠等隱蔽處，或「合法的塗鴉區」。當這類精美作品出現在精華地段時，它往往成為被大眾容忍、甚至被商業收編為「街頭藝術 (Street Art)」的對象。這正是報導中探討的「雙重標準」邊界。",
+                color: "#00ffff"
+            },
+            buffing: {
+                title: "Buffing",
+                subtitle: "覆蓋 / 清除",
+                desc: "政府單位或屋主使用油漆將牆面上的塗鴉覆蓋掉的行為。通常會留下與原本牆面顏色不搭的突兀色塊。",
+                meaning: "「公權力的抹除。」Buffing 本身諷刺地成為了另一種城市地景。這是一場官方與塗鴉客在牆面上的無聲對話：你蓋掉我，我就在你蓋掉的乾淨色塊上再畫一次。這種拉扯展現了主流規範與邊緣反叛的永恆對抗。",
+                color: "#ff3333"
+            }
+        };
+
+        // 隱藏的觸發區域設定 (rx, ry 是相對 x,y 座標百分比，rw, rh 是寬高百分比)
+        const targetZones = [
+            { id: 'tag', rx: 0.1, ry: 0.15, rw: 0.25, rh: 0.25, hits: 0, required: 150, unlocked: false },
+            { id: 'throwup', rx: 0.35, ry: 0.45, rw: 0.3, rh: 0.35, hits: 0, required: 200, unlocked: false },
+            { id: 'piece', rx: 0.65, ry: 0.2, rw: 0.25, rh: 0.4, hits: 0, required: 250, unlocked: false },
+            { id: 'buffing', rx: 0.15, ry: 0.65, rw: 0.2, rh: 0.25, hits: 0, required: 120, unlocked: false }
+        ];
+
+        // Canvas 設定
+        const canvas = document.getElementById('sprayCanvas');
+        const ctx = canvas.getContext('2d');
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+        
+        // 噴漆設定
+        const sprayRadius = 25;
+        const sprayDensity = 40; // 粒子密度
+        const sprayColor = 'rgba(0, 255, 255, 0.4)'; // 螢光藍色噴漆
+
+        // 調整 Canvas 解析度與容器相符
+        function resizeCanvas() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+            drawZonesHints();
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        // 繪製隱藏區域的微弱提示框
+        function drawZonesHints() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            targetZones.forEach(zone => {
+                const x = zone.rx * canvas.width;
+                const y = zone.ry * canvas.height;
+                const w = zone.rw * canvas.width;
+                const h = zone.rh * canvas.height;
+
+                if (!zone.unlocked) {
+                    ctx.strokeStyle = 'rgba(255, 255, 0, 0.2)'; // 微弱的黃色框線
+                    ctx.setLineDash([5, 5]);
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x, y, w, h);
+                    
+                    ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
+                    ctx.font = '10px monospace';
+                    ctx.fillText('ANOMALY_ZONE', x + 5, y + 15);
+                } else {
+                    // 已解鎖則畫上實線框
+                    ctx.strokeStyle = dictionaryData[zone.id].color;
+                    ctx.setLineDash([]);
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(x, y, w, h);
+                    ctx.fillStyle = dictionaryData[zone.id].color;
+                    ctx.font = '12px monospace';
+                    ctx.fillText(`[DECODED: ${dictionaryData[zone.id].title.toUpperCase()}]`, x + 5, y - 5);
+                }
+            });
+            ctx.setLineDash([]); // 重置
+        }
+
+        // 初始化
+        resizeCanvas();
+
+        // 噴漆引擎 (畫散佈粒子)
+        function drawSpray(x, y) {
+            ctx.fillStyle = sprayColor;
+            for (let i = 0; i < sprayDensity; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const radius = Math.random() * sprayRadius;
+                // 讓中心點密集，邊緣稀疏
+                const dist = Math.pow(Math.random(), 2) * sprayRadius; 
+                const px = x + Math.cos(angle) * dist;
+                const py = y + Math.sin(angle) * dist;
+                // 畫小點
+                ctx.fillRect(px, py, 1.5, 1.5);
+            }
+        }
+
+        // 檢測噴漆是否落在目標區域內
+        function checkHits(x, y) {
+            const relX = x / canvas.width;
+            const relY = y / canvas.height;
+            let activeZone = null;
+
+            targetZones.forEach(zone => {
+                if (!zone.unlocked && 
+                    relX > zone.rx && relX < zone.rx + zone.rw && 
+                    relY > zone.ry && relY < zone.ry + zone.rh) {
+                    
+                    zone.hits++;
+                    activeZone = zone;
+
+                    // 更新進度條
+                    const progressContainer = document.getElementById('progress-container');
+                    const progressBar = document.getElementById('progress-bar');
+                    const percentText = document.getElementById('scanning-percent');
+                    const targetText = document.getElementById('scanning-target');
+                    
+                    progressContainer.style.opacity = '1';
+                    let percent = Math.min(100, Math.floor((zone.hits / zone.required) * 100));
+                    progressBar.style.width = `${percent}%`;
+                    percentText.textContent = `${percent}%`;
+                    targetText.textContent = `掃描區域 [座標 ${Math.floor(relX*100)}:${Math.floor(relY*100)}]`;
+                    document.getElementById('status-text').textContent = 'STATUS: SCANNING...';
+                    document.getElementById('status-text').className = 'text-yellow-400 font-mono text-xs';
+
+                    // 達到解鎖條件
+                    if (zone.hits >= zone.required) {
+                        unlockZone(zone);
+                    }
+                }
+            });
+
+            // 如果滑鼠離開區域，進度條稍微淡出
+            if (!activeZone) {
+                document.getElementById('progress-container').style.opacity = '0.5';
+                document.getElementById('status-text').textContent = 'STATUS: DRAWING';
+                document.getElementById('status-text').className = 'text-cyan-400 font-mono text-xs';
+            }
+        }
+
+        // 解鎖邏輯
+        function unlockZone(zone) {
+            zone.unlocked = true;
+            
+            // 視覺回饋：重畫框線
+            drawZonesHints();
+
+            // 狀態列更新
+            document.getElementById('status-text').textContent = 'STATUS: DATA_EXTRACTED';
+            document.getElementById('status-text').className = 'text-green-500 font-mono text-xs';
+            document.getElementById('progress-container').style.opacity = '0.2';
+
+            // 顯示資料
+            displayDecoderInfo(zone.id);
+            
+            // 加入已解鎖清單按鈕
+            addUnlockedButton(zone.id);
+        }
+
+        // 顯示右側面板資料
+        function displayDecoderInfo(id) {
+            const data = dictionaryData[id];
+            
+            document.getElementById('default-state').classList.add('hidden');
+            document.getElementById('decoded-state').classList.remove('hidden');
+            
+            document.getElementById('term-title').textContent = data.title;
+            document.getElementById('term-title').style.color = data.color;
+            document.getElementById('term-subtitle').textContent = data.subtitle;
+            document.getElementById('term-desc').textContent = data.desc;
+            
+            // 打字機特效
+            const meaningEl = document.getElementById('term-meaning');
+            meaningEl.textContent = data.meaning;
+            meaningEl.classList.remove('typewriter-text');
+            void meaningEl.offsetWidth; // trigger reflow
+            meaningEl.classList.add('typewriter-text');
+            
+            setTimeout(() => {
+                meaningEl.classList.remove('typewriter-text');
+                meaningEl.style.borderRight = 'none';
+            }, 1000);
+        }
+
+        // 增加已解鎖清單的按鈕
+        function addUnlockedButton(id) {
+            const list = document.getElementById('unlocked-list');
+            const data = dictionaryData[id];
+            const btn = document.createElement('button');
+            btn.className = `text-xs border px-2 py-1 rounded transition hover:bg-slate-700`;
+            btn.style.borderColor = data.color;
+            btn.style.color = data.color;
+            btn.textContent = data.title;
+            btn.onclick = () => displayDecoderInfo(id);
+            list.appendChild(btn);
+        }
+
+        // 事件監聽：滑鼠
+        canvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            const rect = canvas.getBoundingClientRect();
+            lastX = e.clientX - rect.left;
+            lastY = e.clientY - rect.top;
+            drawSpray(lastX, lastY);
+            checkHits(lastX, lastY);
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            // 補間繪製，讓滑動太快時不會斷線
+            const dist = Math.hypot(x - lastX, y - lastY);
+            const steps = Math.max(1, Math.floor(dist / 5)); // 每 5px 畫一次
+            
+            for(let i=0; i<=steps; i++) {
+                const interpX = lastX + (x - lastX) * (i/steps);
+                const interpY = lastY + (y - lastY) * (i/steps);
+                drawSpray(interpX, interpY);
+                checkHits(interpX, interpY);
+            }
+            
+            lastX = x;
+            lastY = y;
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            isDrawing = false;
+            document.getElementById('status-text').textContent = 'STATUS: IDLE';
+            document.getElementById('status-text').className = 'text-green-500 font-mono text-xs';
+            document.getElementById('progress-container').style.opacity = '0.5';
+        });
+
+        canvas.addEventListener('mouseout', () => isDrawing = false);
+
+        // 事件監聽：觸控 (手機版)
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // 防止滾動
+            isDrawing = true;
+            const rect = canvas.getBoundingClientRect();
+            lastX = e.touches[0].clientX - rect.left;
+            lastY = e.touches[0].clientY - rect.top;
+            drawSpray(lastX, lastY);
+            checkHits(lastX, lastY);
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (!isDrawing) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.touches[0].clientX - rect.left;
+            const y = e.touches[0].clientY - rect.top;
+            
+            const dist = Math.hypot(x - lastX, y - lastY);
+            const steps = Math.max(1, Math.floor(dist / 5));
+            
+            for(let i=0; i<=steps; i++) {
+                const interpX = lastX + (x - lastX) * (i/steps);
+                const interpY = lastY + (y - lastY) * (i/steps);
+                drawSpray(interpX, interpY);
+                checkHits(interpX, interpY);
+            }
+            
+            lastX = x;
+            lastY = y;
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', () => isDrawing = false);
+
+        // 清除按鈕功能
+        document.getElementById('clearBtn').addEventListener('click', () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // 保留已解鎖的框線，只清除噴漆
+            drawZonesHints();
+        });
+
+    </script>
+</body>
+</html>
